@@ -25,6 +25,9 @@ import util.JsonUtils;
 @RouteBase(produces = "application/json")
 public class MergeRequestController {
 
+    @ConfigProperty(name = "gitlab.webhook.secret")
+	Optional<String> gitlabWebhookSecret;
+
 	@Inject
 	GitLabService gitLabService;
 
@@ -32,30 +35,68 @@ public class MergeRequestController {
 	EventBus eventsBus;
 
 	@Route(path = "/ucascade/merge-request", order = 1, methods = HttpMethod.POST, type = HandlerType.NORMAL)
-	public CascadeResult mergeRequest(@Header("X-Gitlab-Event-UUID") String gitlabEventUUID, @Body MergeRequestEvent mrEvent, HttpServerResponse response) {
+	public CascadeResult mergeRequest(@Header("X-Gitlab-Event-UUID") String gitlabEventUUID, @Header("X-Gitlab-Token") String gitlabToken, @Body MergeRequestEvent mrEvent, HttpServerResponse response) {
 		Log.infof("GitlabEvent: '%s' | Received", gitlabEventUUID);
-		MergeRequestSimple simpleEvent = JsonUtils.toSimpleEvent(mrEvent, gitlabEventUUID);
-		// consumed by GitLabService class
-		eventsBus.send(GitLabService.MERGE_REQUEST_EVENT, simpleEvent);
+        if (isGitlabWebhookSecretValid(gitlabToken, gitlabEventUUID)) {
+			MergeRequestSimple simpleEvent = JsonUtils.toSimpleEvent(mrEvent, gitlabEventUUID);
+            // consumed by GitLabService class
+            eventsBus.send(GitLabService.MERGE_REQUEST_EVENT, simpleEvent);
+		}
 		response.setStatusCode(202);
 		return gitLabService.createResult(gitlabEventUUID);
 	}
 
 	@Route(path = "/ucascade/merge-request-blocking", order = 1, methods = HttpMethod.POST, type = HandlerType.BLOCKING)
-	public CascadeResult mergeRequestBlocking(@Header("X-Gitlab-Event-UUID") String gitlabEventUUID, @Body MergeRequestEvent mrEvent) {
+	public CascadeResult mergeRequestBlocking(@Header("X-Gitlab-Event-UUID") String gitlabEventUUID, @Header("X-Gitlab-Token") String gitlabToken, @Body MergeRequestEvent mrEvent) {
 		Log.infof("GitlabEvent: '%s' | Received (blocking)", gitlabEventUUID);
-		MergeRequestSimple simpleEvent = JsonUtils.toSimpleEvent(mrEvent, gitlabEventUUID);
-		return gitLabService.mergeRequest(simpleEvent);
+        if (isGitlabWebhookSecretValid(gitlabToken, gitlabEventUUID)) {
+			MergeRequestSimple simpleEvent = JsonUtils.toSimpleEvent(mrEvent, gitlabEventUUID);
+		    return gitLabService.mergeRequest(simpleEvent);
+		}
+        CascadeResult result = service.createResult(gitlabEventUUID);
+		result.setError("Event skipped");
+		return result;
 	}
 
 	@Route(path = "/ucascade/replay", order = 1, methods = HttpMethod.POST, type = HandlerType.BLOCKING)
-	public CascadeResult replay(@Body MergeRequestSimple mrSimple) {
+	public CascadeResult replay(@Header("X-Gitlab-Token") String gitlabToken, @Body MergeRequestSimple mrSimple) {
 		String gitlabEventUUID = mrSimple.getGitlabEventUUID();
 		if (gitlabEventUUID == null) {
 			gitlabEventUUID = "replay-" + new Random().nextInt(1000, 10000);
 		}
 		Log.infof("GitlabEvent: '%s' | Replay", gitlabEventUUID);
-		return gitLabService.mergeRequest(mrSimple);
+        if (isGitlabWebhookSecretValid(gitlabToken, gitlabEventUUID)) {
+		    return gitLabService.mergeRequest(mrSimple);
+        }
+        CascadeResult result = service.createResult(gitlabEventUUID);
+		result.setError("Event skipped");
+		return result;
+	}
+
+    private boolean isGitlabWebhookSecretValid(String gitlabToken, String gitlabEventUUID) {
+		if (gitlabToken != null) {
+			if (gitlabWebhookSecret.isEmpty()) {
+				Log.errorf("GitlabEvent: '%s' | Got an token value, but no secret is configured with the 'gitlab.webhook.secret' configuration", gitlabEventUUID);
+				return false;
+			} else {
+				String expected = gitlabWebhookSecret.get()
+				if (Objects.equals(expected, gitlabToken)) {
+					Log.debugf("GitlabEvent: '%s' | Token value is correct", gitlabEventUUID);
+					return true;
+				} else {
+					Log.infof("GitlabEvent: '%s' | Token value from Gitlab '%s' does not match with the expected one '%s'. Check the 'gitlab.webhook.secret' configuration", gitlabEventUUID, gitlabToken, expected);
+					return false;
+				}
+			}
+		} else {
+			if (gitlabWebhookSecret.isEmpty()) {
+				Log.debugf("GitlabEvent: '%s' | No token value configured, no secret configured", gitlabEventUUID);
+				return true;
+			} else {
+				Log.warnf("GitlabEvent: '%s' | No token value send (is a secret configured in Gitlab?), but a secret is configuredwith the 'gitlab.webhook.secret' configuration", gitlabEventUUID);
+				return false;
+			}
+		}
 	}
 
 	@Route(path = "/*", order = 2)
