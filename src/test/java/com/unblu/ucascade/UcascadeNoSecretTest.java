@@ -54,7 +54,7 @@ import service.GitLabService;
 @QuarkusTest
 @QuarkusTestResource(WireMockGitlabProxy.class)
 @TestProfile(GitlabSecretEmptyProfile.class)
-class UcascadeTest {
+class UcascadeNoSecretTest {
 
 	final static String API_PREFIX = "/api/v4/";
 	final static String API_AUTH_KEY_NAME = "PRIVATE-TOKEN";
